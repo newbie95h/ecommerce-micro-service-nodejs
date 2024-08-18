@@ -9,5 +9,6 @@ Ce script effectue l'installation initiale de
 - Nginx
 - MongoDB
 - RabbitMQ
+- Certbot
 
 To completed …
