@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# setup-ecommerce-small.sh
-# Ce script effectue l'installation initiale de Nodejs, yarn, Nginx, MongoDB, RabbitMQ, vérifie la présence des fichiers nécessaires,
-# Il configure également Nginx, RabbitMQ, modifie les fichiers '.env.dev' du dépôt.
+# setup-ecommerce-v1.sh
+# Ce script effectue l'installation et la configuration initiale des composants nécessaires à l'application.
 # ----------------------------------------------------------------------------------------------- #
 
 # Fonction pour afficher des messages de titre
@@ -294,7 +293,7 @@ log "Nginx est maintenant opérationnel."
 pause
 
 # ----------------------------------------------------------------------------------------------- #
-title "### PHASE 8.4.1 : Installation de Certbot ###"
+title "### PHASE 8.2 : Installation de Certbot ###"
 
 # Vérifier si Certbot est déjà installé
 if ! command -v certbot &> /dev/null; then
@@ -304,6 +303,138 @@ else
     log "Certbot est déjà installé."
 fi
 pause
+
+# ----------------------------------------------------------------------------------------------- #
+# A TESTER ET OPTIMISER
+title "### PHASE 8.3 : Configuration de Certbot pour le site 'ecommerce'"
+
+DOMAIN="ecommerce.newbie.cloudns.be"
+EMAIL="james_95h@outlook.com"
+CERT_DIR="/etc/letsencrypt/live/$DOMAIN"
+BASE_DIR="$(pwd)"
+BACKUP_DIR="$BASE_DIR/.deploy/backup"  # Chemin vers le dossier de sauvegarde
+BACKUP_FILE="$BACKUP_DIR/letsencrypt-backup.tar.gz"  # Fichier de sauvegarde compressé
+
+# Vérifier si les certificats sont déjà présents
+if sudo [ -d "$CERT_DIR" ]; then
+    log "Certificat SSL déjà présent pour le domaine $DOMAIN."
+else
+    log "Certificat SSL non trouvé pour le domaine $DOMAIN."
+    
+    # Restaurer les certificats sauvegardés si disponibles
+    if [ -f "$BACKUP_FILE" ]; then
+        log "Restauration des certificats depuis la sauvegarde..."
+        sudo tar -xvzf "$BACKUP_FILE" -C /etc/letsencrypt/  # Extraire dans le dossier cible
+        
+        # Recharger Nginx avec la configuration restaurée
+        sudo systemctl reload nginx
+    else
+        log "Aucune sauvegarde trouvée. Obtention du nouveau certificat SSL..."
+        sudo certbot certonly --nginx -d $DOMAIN --non-interactive --agree-tos --email $EMAIL || { log "Échec de la demande du certificat SSL"; exit 1; }
+        
+        # Sauvegarder les certificats obtenus
+        log "Sauvegarde des certificats obtenus..."
+        sudo tar -cvzf "$BACKUP_FILE" -C /etc/letsencrypt/ .
+        sudo chmod 644 "$BACKUP_FILE"
+        
+        # Redémarrer Nginx pour appliquer les changements
+        sudo systemctl restart nginx
+    fi
+fi
+
+# Vérifier la présence du fichier cron pour Certbot
+if [ -f "/etc/cron.d/certbot" ]; then
+    log "Le cron job pour Certbot est déjà configuré dans /etc/cron.d/certbot."
+else
+    log "Le cron job pour Certbot n'est pas configuré. Ajout manuel du cron job pour le renouvellement automatique des certificats."
+    echo "0 3 * * * /usr/bin/certbot renew --quiet --deploy-hook 'systemctl reload nginx'" | sudo tee -a /etc/crontab > /dev/null
+fi
+
+log "Configuration terminée."
+pause
+
+# ----------------------------------------------------------------------------------------------- #
+title "### PHASE 8.4 : Configuration de Nginx ###"
+
+# Création du fichier de configuration NGINX
+CONFIG_FILE="/etc/nginx/sites-available/ecommerce"
+log "Création du fichier de configuration NGINX à $CONFIG_FILE..."
+
+sudo tee $CONFIG_FILE > /dev/null <<EOL
+server {
+    listen 80;
+    server_name ecommerce.newbie.cloudns.be;
+
+    # Redirection de HTTP vers HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl; # managed by Certbot
+    server_name ecommerce.newbie.cloudns.be;
+    ssl_certificate /etc/letsencrypt/live/ecommerce.newbie.cloudns.be/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/ecommerce.newbie.cloudns.be/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+    # Redirection pour l'application front
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    # Redirection pour les microservices
+    location /customer/ {
+        proxy_pass http://localhost:8001/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /product/ {
+        proxy_pass http://localhost:8002/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /shopping/ {
+        proxy_pass http://localhost:8003/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+
+EOL
+
+log "Configuration du site ecommerce de Nginx terminée."
+pause
+
+# ----------------------------------------------------------------------------------------------- #
+title "### PHASE 8.5 : Activation du site eCommerce ###"
+
+# Vérifier si le lien symbolique existe déjà
+if [ ! -L /etc/nginx/sites-enabled/ecommerce ]; then
+    log "Activation du site 'ecommerce' en créant un lien symbolique..."
+    sudo ln -s /etc/nginx/sites-available/ecommerce /etc/nginx/sites-enabled/ || { log "Échec de la création du lien symbolique pour le site 'ecommerce'"; exit 1; }
+else
+    log "Le lien symbolique pour le site 'ecommerce' existe déjà."
+fi
+
+# Tester la configuration NGINX
+log "Test de la configuration NGINX..."
+sudo nginx -t || { log "Échec du test de configuration NGINX"; exit 1; }
+
+# Redémarrer Nginx pour appliquer les modifications
+log "Redémarrage de Nginx..."
+sudo systemctl restart nginx || { log "Échec du redémarrage de Nginx"; exit 1; }
 
 # ----------------------------------------------------------------------------------------------- #
 title "### PHASE 9.1 : Application : modification des variables d'environnement ###"
@@ -358,5 +489,5 @@ log "Mise à jour des fichiers .env.dev terminée."
 pause
 
 # ----------------------------------------------------------------------------------------------- #
-title "Le script ecommerce-init.sh est terminé."
+title "Le script s'est déroulé avec succès."
 echo -e ""
