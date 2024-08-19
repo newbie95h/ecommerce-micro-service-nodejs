@@ -1,6 +1,6 @@
 # eCommerce micro-service app - Deployment
 
-* Deploy_v1 => setup-ecommerce-v1.sh
+## Deploy_v1 => setup-ecommerce-v1.sh
  
  Ceci est une version de découverte de l'application.
  Le but est d'installer l'application durectement sur la VM Amazon sans passer par Docker ou autre.
@@ -30,7 +30,7 @@
    - PHASE 9.1 : Application : modification des variables d'environnement ###
    - PHASE 9.2 : Application : installation des services ecommerce-micro-service-nodejs
 
-* Deploy_v2 => setup-ecommerce-v2.sh
+## Deploy_v2 => setup-ecommerce-v2.sh
 
  Cette version va déployer l'application telle qu'elle est fournie. Le déploiement utilisera Docker.
  
