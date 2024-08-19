@@ -24,7 +24,7 @@ pause() {
 title "### eCommerce - Début du processus d'installation ###"
 # ----------------------------------------------------------------------------------------------- #
 title "### PHASE 1: Clonage du dépôt GitHub ###"
-git clone https://github.com/fallewi/ecommerce-micro-service-nodejs.git || { log "Échec du clonage du dépôt GitHub"; exit 1; }
+git clone https://github.com/newbie95h/ecommerce-micro-service-nodejs.git || { log "Échec du clonage du dépôt GitHub"; exit 1; }
 cd ecommerce-micro-service-nodejs || { log "Échec de l'accès au répertoire du dépôt"; exit 1; }
 pause
 
