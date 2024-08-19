@@ -13,12 +13,12 @@ title() {
 
 # Fonction pour afficher des messages de log
 log() {
-    echo -e "\n$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    echo -e "\n$(date '+%Y-%m-%d %H:%M:%S') - $1\n"
 }
 
-# Pause de 2 secondes
+# Pause de 0 secondes
 pause() {
-    sleep 2
+    sleep 0
 }
 
 # ----------------------------------------------------------------------------------------------- #
@@ -31,14 +31,14 @@ pause
 
 # ----------------------------------------------------------------------------------------------- #
 title "### PHASE 2: Mise à jour des paquets ###"
-sudo apt-get update && sudo apt-get upgrade -y || { log "Échec de la mise à jour des paquets"; exit 1; }
+sudo apt-get update && sudo apt-get upgrade -y -o Dpkg::Options::="--force-confnew" || { log "Échec de la mise à jour des paquets"; exit 1; }
 pause
 
 # ----------------------------------------------------------------------------------------------- #
 title "### PHASE 3: Installation de Node.js ###"
 if ! command -v node &> /dev/null; then
     log "Node.js non installé. Installation de Node.js..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - | sudo -E bash - || { log "Échec de la configuration Node.js"; exit 1; }
+    curl -fsSL https://deb.nodesource.com/setup_16.x | sudo -E bash - || { log "Échec de la configuration Node.js"; exit 1; }
     sudo apt-get install -y nodejs || { log "Échec de l'installation de Node.js"; exit 1; }
 else
     log "Node.js est déjà installé."
@@ -114,7 +114,7 @@ else
 fi
 
 log "Vérification du statut du plugin de gestion RabbitMQ"
-if sudo rabbitmq-plugins list -e | grep -q "^rabbitmq_management$"; then
+if sudo rabbitmq-plugins list -e | grep "^\\[E\\*\\] rabbitmq_management"; then
     log "Le plugin de gestion RabbitMQ est déjà activé."
 else
     log "Activation du plugin de gestion RabbitMQ"
@@ -167,12 +167,19 @@ CUSTOMER_ROUTING_KEY="customer"
 PRODUCT_ROUTING_KEY="product"
 SHOPPING_ROUTING_KEY="shopping"
 
-# Vérification et création de l'échange
-CURRENT_EXCHANGE_TYPE=$(rabbitmqadmin list exchanges name type | grep "^${EXCHANGE_NAME} " | awk '{print $2}')
+log "Vérification et création de l'échange"
+CURRENT_EXCHANGE=$(rabbitmqadmin list exchanges name | awk '{print $2}' | grep -w "${EXCHANGE_NAME}")
+CURRENT_EXCHANGE_TYPE=$(rabbitmqadmin list exchanges name type | grep -w "${EXCHANGE_NAME}" | awk '{print $4}')
 
 if [ -z "$CURRENT_EXCHANGE_TYPE" ]; then
     log "Création de l'échange $EXCHANGE_NAME"
-    rabbitmqadmin declare exchange name=${EXCHANGE_NAME} type=${EXCHANGE_TYPE} || { log "Échec de la création de l'échange $EXCHANGE_NAME"; exit 1; }
+    output=$(rabbitmqadmin declare exchange name=${EXCHANGE_NAME} type=${EXCHANGE_TYPE} 2>&1)
+    if echo "$output" | grep -q "exchange declared"; then
+        log "Échange $EXCHANGE_NAME créé avec succès."
+    else
+        log "Échec de la création de l'échange $EXCHANGE_NAME : $output"
+        exit 1
+    fi
 elif [ "$CURRENT_EXCHANGE_TYPE" != "$EXCHANGE_TYPE" ]; then
     log "L'échange $EXCHANGE_NAME existe déjà mais avec un type différent ($CURRENT_EXCHANGE_TYPE). Suppression et recréation..."
     rabbitmqadmin delete exchange name=${EXCHANGE_NAME} || { log "Échec de la suppression de l'échange $EXCHANGE_NAME"; exit 1; }
@@ -181,17 +188,23 @@ else
     log "L'échange $EXCHANGE_NAME existe déjà avec le bon type ($EXCHANGE_TYPE)."
 fi
 
-# Vérification et création des queues
+log "Vérification et création des queues"
 for QUEUE in ${CUSTOMER_QUEUE} ${PRODUCT_QUEUE} ${SHOPPING_QUEUE}; do
-    if ! rabbitmqadmin list queues name | grep -q "^${QUEUE}$"; then
-        log "Création de la queue $QUEUE"
-        rabbitmqadmin declare queue name=${QUEUE} durable=true || { log "Échec de la création de la queue $QUEUE"; exit 1; }
-    else
+    if rabbitmqadmin list queues name | awk '{print $2}' | grep -w "${QUEUE}"; then
         log "La queue $QUEUE existe déjà."
+    else
+        log "Création de la queue $QUEUE"
+        output=$(rabbitmqadmin declare queue name=${QUEUE} durable=true 2>&1)
+        if echo "$output" | grep -q "queue declared"; then
+            log "Queue $QUEUE créée avec succès."
+        else
+            log "Échec de la création de la queue $QUEUE : $output"
+            exit 1
+        fi
     fi
 done
 
-# Vérification et création des liaisons (bindings)
+log "Vérification et création des liaisons (bindings)"
 declare -A bindings=(
     ["${CUSTOMER_QUEUE}"]=${CUSTOMER_ROUTING_KEY}
     ["${PRODUCT_QUEUE}"]=${PRODUCT_ROUTING_KEY}
@@ -200,15 +213,21 @@ declare -A bindings=(
 
 for QUEUE in "${!bindings[@]}"; do
     ROUTING_KEY=${bindings[$QUEUE]}
-    if ! rabbitmqadmin list bindings | grep -q "${EXCHANGE_NAME}.*${QUEUE}.*${ROUTING_KEY}"; then
-        log "Liaison de la queue $QUEUE avec l'échange $EXCHANGE_NAME"
-        rabbitmqadmin declare binding source=${EXCHANGE_NAME} destination=${QUEUE} destination_type=queue routing_key=${ROUTING_KEY} || { log "Échec de la liaison de la queue $QUEUE"; exit 1; }
-    else
+    if rabbitmqadmin list bindings | grep -q "${EXCHANGE_NAME}.*${QUEUE}.*${ROUTING_KEY}"; then
         log "La liaison de la queue $QUEUE avec l'échange $EXCHANGE_NAME existe déjà."
+    else
+        log "Liaison de la queue $QUEUE avec l'échange $EXCHANGE_NAME"
+        output=$(rabbitmqadmin declare binding source=${EXCHANGE_NAME} destination=${QUEUE} destination_type=queue routing_key=${ROUTING_KEY} 2>&1)
+        if echo "$output" | grep -q "binding declared"; then
+            log "Liaison de la queue $QUEUE avec l'échange $EXCHANGE_NAME créée avec succès."
+        else
+            log "Échec de la liaison de la queue $QUEUE avec l'échange $EXCHANGE_NAME : $output"
+            exit 1
+        fi
     fi
 done
 
-# Test de connexion avec l'utilisateur
+log "Test de connexion avec l'utilisateur"
 if ! sudo rabbitmqctl authenticate_user ${RABBIT_USER} ${RABBIT_PASSWORD} &> /dev/null; then
     log "Utilisateur $RABBIT_USER ne peut pas se connecter avec le mot de passe fourni. Recréation de l'utilisateur."
     sudo rabbitmqctl delete_user ${RABBIT_USER} 2>/dev/null || true
@@ -218,13 +237,43 @@ else
     log "Utilisateur $RABBIT_USER peut se connecter avec le mot de passe fourni."
 fi
 
-# Attribution des permissions et des tags
-log "Attribution des permissions et des tags à l'utilisateur $RABBIT_USER"
-sudo rabbitmqctl set_user_tags ${RABBIT_USER} administrator || { log "Échec de l'attribution des tags à l'utilisateur $RABBIT_USER"; exit 1; }
-sudo rabbitmqctl set_permissions -p ${RABBIT_VHOST} ${RABBIT_USER} ".*" ".*" ".*" || { log "Échec de l'attribution des permissions à l'utilisateur $RABBIT_USER"; exit 1; }
+log "Attribution des tags de l'utilisateur"
+USER_TAGS=$(sudo rabbitmqctl list_users | awk -v user="$RABBIT_USER" '$1 == user {print $2}')
+if [[ "$USER_TAGS" != *"administrator"* ]]; then
+    sudo rabbitmqctl set_user_tags ${RABBIT_USER} administrator || { log "Échec de l'attribution des tags à l'utilisateur $RABBIT_USER"; exit 1; }
+else
+    log "Les tags de l'utilisateur ${RABBIT_USER} sont déjà corrects."
+fi
+
+log "Attribution des permissions de l'utilisateur"
+USER_PERMISSIONS=$(sudo rabbitmqctl list_permissions -p $RABBIT_VHOST | awk -v user="$RABBIT_USER" '$1 == user {print $2, $3, $4}')
+if [[ "$USER_PERMISSIONS" != ".* .* .*" ]]; then
+    sudo rabbitmqctl set_permissions -p ${RABBIT_VHOST} ${RABBIT_USER} ".*" ".*" ".*" || { log "Échec de l'attribution des permissions à l'utilisateur $RABBIT_USER"; exit 1; }
+else
+    echo "Les permissions de l'utilisateur ${RABBIT_USER} sont déjà correctes."
+fi
+
+log "Test de publication et de consommation des messages sur les queues"
+
+declare -A routing_keys=(
+    ["${CUSTOMER_QUEUE}"]=${CUSTOMER_ROUTING_KEY}
+    ["${PRODUCT_QUEUE}"]=${PRODUCT_ROUTING_KEY}
+    ["${SHOPPING_QUEUE}"]=${SHOPPING_ROUTING_KEY}
+)
+
+for QUEUE in "${!routing_keys[@]}"; do
+    ROUTING_KEY=${routing_keys[$QUEUE]}
+    log "Test de publication d'un message dans la queue $QUEUE avec la routing key $ROUTING_KEY"
+    rabbitmqadmin publish exchange="${EXCHANGE_NAME}" routing_key="${ROUTING_KEY}" payload="Test message in ${QUEUE}" || { log "Échec de la publication du message dans la queue $QUEUE"; exit 1; }
+done
+
+log "Vérification que les messages sont bien présents"
+rabbitmqadmin list queues name messages
+pause
 
 log "Configuration RabbitMQ réussie."
 pause
+
 
 # ----------------------------------------------------------------------------------------------- #
 title "### PHASE 8.1 : Installation de Nginx ###"
